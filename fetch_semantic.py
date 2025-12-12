@@ -1,143 +1,214 @@
+#!/usr/bin/env python3
+# final_optimized_rss.py
+# Python 3.11+ recommended
+
 import feedparser
 import os
-import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+import base64
 
-# -----------------------------
-# CONFIG
-# -----------------------------
+# -------------------- CONFIG --------------------
 FEEDS = [
     "http://www.thedailystar.net/latest/rss/rss.xml",
     "https://tbsnews.net/top-news/rss.xml",
-    "https://www.dhakatribune.com/feed/",
+    "https://www.dhakatribune.com/feed/"
 ]
 
-OUTFILE = "result.xml"
-MAX_ITEMS = 1000
-MAX_FEED_ITEMS = 50           # max items checked per feed
-MAX_EXISTING_CHECK = 50       # compare only with last 50 items
-SIM_THRESHOLD = 0.88
-BLOCK = ["/sport/", "/sports/", "/entertainment/"]
+RESULT_FILE = "result.xml"
+MAX_ITEMS = 1000          # total items kept
+MAX_FEED_ITEMS = 50       # max items checked/added per feed per run
+MAX_EXISTING = 50         # compare only against newest this many existing items
+SIM_THRESHOLD = 0.88      # cosine similarity threshold for duplicate
+DENY_PARTS = ("/sport/", "/sports/", "/entertainment/")
 
-SLEEP_SECONDS = 300           # 5 minutes
+# -------------------- HELPERS --------------------
+def b64_encode_array(arr: np.ndarray) -> str:
+    a = np.asarray(arr, dtype=np.float32)
+    return base64.b64encode(a.tobytes()).decode("ascii")
 
+def b64_decode_array(s: str) -> np.ndarray:
+    b = base64.b64decode(s.encode("ascii"))
+    return np.frombuffer(b, dtype=np.float32)
 
-# -----------------------------
-# Initialize XML
-# -----------------------------
-def load_existing():
-    if not os.path.exists(OUTFILE):
+def normalize_matrix(mat: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return mat / norms
+
+# -------------------- MODEL (load once) --------------------
+MODEL_NAME = "all-MiniLM-L6-v2"
+model = SentenceTransformer(MODEL_NAME)
+
+def embed_texts(texts):
+    # returns float32 numpy array shape (n, d)
+    arr = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+    return np.asarray(arr, dtype=np.float32)
+
+# -------------------- XML IO --------------------
+def ensure_xml():
+    if not os.path.exists(RESULT_FILE):
         root = ET.Element("rss")
-        chan = ET.SubElement(root, "channel")
-        ET.ElementTree(root).write(OUTFILE, encoding="utf-8", xml_declaration=True)
+        root.set("version", "2.0")
+        ch = ET.SubElement(root, "channel")
+        # store feed meta container
+        ET.SubElement(ch, "feedmeta")
+        tree = ET.ElementTree(root)
+        tree.write(RESULT_FILE, encoding="utf-8", xml_declaration=True)
 
-    tree = ET.parse(OUTFILE)
-    return tree, tree.getroot().find("channel")
+def load_tree_and_channel():
+    ensure_xml()
+    tree = ET.parse(RESULT_FILE)
+    root = tree.getroot()
+    channel = root.find("channel")
+    # ensure feedmeta exists
+    if channel.find("feedmeta") is None:
+        channel.insert(0, ET.Element("feedmeta"))
+    return tree, channel
 
+# -------------------- existing cached embeddings (newest first) --------------------
+def get_existing_cached(channel):
+    items = channel.findall("item")
+    top_items = items[:MAX_EXISTING]
+    titles = []
+    embeds = []
+    for it in top_items:
+        t = it.findtext("title", "") or ""
+        emb_tag = it.findtext("embed", "")
+        if emb_tag:
+            try:
+                vec = b64_decode_array(emb_tag)
+            except Exception:
+                vec = embed_texts([t])[0]
+        else:
+            vec = embed_texts([t])[0]
+        titles.append(t)
+        embeds.append(vec)
+    if embeds:
+        emb_mat = np.vstack(embeds).astype(np.float32)
+        emb_mat = normalize_matrix(emb_mat)
+    else:
+        emb_mat = np.empty((0, model.get_sentence_embedding_dimension()), dtype=np.float32)
+    return titles, emb_mat
 
-# -----------------------------
-# Model
-# -----------------------------
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# -------------------- feed meta handling --------------------
+def get_feed_lastseen(channel, feed_url):
+    fm = channel.find("feedmeta")
+    for fm_child in fm.findall("feed"):
+        if fm_child.get("url") == feed_url:
+            return fm_child.findtext("last_link", "")
+    return ""
 
-def embed_title(t):
-    return model.encode(t, convert_to_numpy=True)
+def set_feed_lastseen(channel, feed_url, last_link):
+    fm = channel.find("feedmeta")
+    for fm_child in fm.findall("feed"):
+        if fm_child.get("url") == feed_url:
+            ln = fm_child.find("last_link")
+            if ln is None:
+                ln = ET.SubElement(fm_child, "last_link")
+            ln.text = last_link
+            return
+    # create
+    new = ET.SubElement(fm, "feed")
+    new.set("url", feed_url)
+    ln = ET.SubElement(new, "last_link")
+    ln.text = last_link
 
-
-def semantic_match(embed_a, embed_b):
-    return cosine_similarity([embed_a], [embed_b])[0][0] >= SIM_THRESHOLD
-
-
-# -----------------------------
-# Block unwanted urls
-# -----------------------------
-def blocked(url):
-    url = url.lower()
-    return any(b in url for b in BLOCK)
-
-
-# -----------------------------
-# Add at top
-# -----------------------------
-def add_item(channel, entry):
+# -------------------- make item element with embed --------------------
+def build_item(entry, emb_vec: np.ndarray):
     item = ET.Element("item")
     ET.SubElement(item, "title").text = entry.get("title", "")
     ET.SubElement(item, "link").text = entry.get("link", "")
     ET.SubElement(item, "pubDate").text = entry.get("published", datetime.utcnow().isoformat())
+    ET.SubElement(item, "guid").text = entry.get("id", entry.get("link", ""))
+    ET.SubElement(item, "embed").text = b64_encode_array(emb_vec)
+    return item
 
-    # Move current children down, insert new at top
-    children = list(channel)
-    for child in children:
-        channel.remove(child)
-    channel.insert(0, item)
-    for child in children:
-        channel.append(child)
+# -------------------- vectorized duplicate check --------------------
+def batch_is_duplicate(candidate_embs: np.ndarray, existing_normed: np.ndarray, threshold=SIM_THRESHOLD):
+    # candidate_embs: (m,d) float32
+    # existing_normed: (n,d) float32, already normalized
+    if existing_normed.size == 0:
+        return np.zeros(candidate_embs.shape[0], dtype=bool)
+    cand_norm = normalize_matrix(candidate_embs)
+    sims = np.matmul(cand_norm, existing_normed.T)  # (m,n)
+    maxs = sims.max(axis=1)
+    return maxs >= threshold
 
-    # enforce max size
-    items = channel.findall("item")
-    if len(items) > MAX_ITEMS:
-        for old in items[MAX_ITEMS:]:
-            channel.remove(old)
+# -------------------- main processing --------------------
+def process_once():
+    tree, channel = load_tree_and_channel()
+    existing_titles, existing_normed = get_existing_cached(channel)
 
+    # For speed, keep existing_normed and update as we add new items
+    for feed_url in FEEDS:
+        feed = feedparser.parse(feed_url)
+        entries = feed.entries or []
+        if not entries:
+            # update lastseen to empty if none
+            set_feed_lastseen(channel, feed_url, "")
+            continue
 
-# -----------------------------
-# Fetch Once
-# -----------------------------
-def fetch_once():
-    tree, channel = load_existing()
-
-    # Get newest 50 existing titles
-    existing_items = channel.findall("item")[:MAX_EXISTING_CHECK]
-    existing_titles = [i.findtext("title", "") for i in existing_items]
-    existing_embeds = [embed_title(t) for t in existing_titles]
-
-    for url in FEEDS:
-        feed = feedparser.parse(url)
-
-        count = 0
-        for entry in feed.entries[:MAX_FEED_ITEMS]:  # max check 50 per feed
-            title = entry.get("title", "")
-            link = entry.get("link", "")
-
-            if not title or not link:
+        last_seen = get_feed_lastseen(channel, feed_url)
+        # Build list of new entries (those before last_seen). Feed entries are typically newest-first.
+        new_entries = []
+        for e in entries:
+            link = e.get("link", "")
+            if not link:
                 continue
-            if blocked(link):
-                continue
-
-            # embed once per new title
-            new_emb = embed_title(title)
-
-            # compare only against last 50 existing
-            duplicate = False
-            for old_emb in existing_embeds:
-                if semantic_match(new_emb, old_emb):
-                    duplicate = True
-                    break
-
-            if duplicate:
-                continue
-
-            # New article
-            add_item(channel, entry)
-            existing_embeds.insert(0, new_emb)   # update top
-            existing_embeds = existing_embeds[:MAX_EXISTING_CHECK]
-
-            count += 1
-
-            if count >= MAX_FEED_ITEMS:
+            if last_seen and link == last_seen:
+                break
+            new_entries.append(e)
+            if len(new_entries) >= MAX_FEED_ITEMS:
                 break
 
-    tree.write(OUTFILE, encoding="utf-8", xml_declaration=True)
+        # If last_seen is empty and new_entries might be older than MAX_FEED_ITEMS,
+        # we still only process up to MAX_FEED_ITEMS (handled above).
+        if not new_entries:
+            # nothing new; update last seen to latest entry link for future runs
+            set_feed_lastseen(channel, feed_url, entries[0].get("link", ""))
+            continue
 
+        # Compute embeddings for batch of candidate titles
+        candidate_titles = [e.get("title", "") for e in new_entries]
+        candidate_embs = embed_texts(candidate_titles)  # shape (m,d)
 
-# -----------------------------
-# Loop
-# -----------------------------
+        # Determine duplicates (vectorized)
+        dup_mask = batch_is_duplicate(candidate_embs, existing_normed, SIM_THRESHOLD)
+
+        # Iterate through new_entries in order (newest first) and insert non-duplicates at top
+        added_any = False
+        for idx, entry in enumerate(new_entries):
+            if DENY_PARTS and any(p in (entry.get("link", "") or "").lower() for p in DENY_PARTS):
+                continue
+            if dup_mask[idx]:
+                continue
+            emb_vec = candidate_embs[idx]
+            item = build_item(entry, emb_vec)
+            # insert at top: position 0 within channel children after feedmeta if present
+            channel.insert(0, item)
+            # update caches
+            if existing_normed.size == 0:
+                existing_normed = normalize_matrix(np.expand_dims(emb_vec.astype(np.float32), axis=0))
+            else:
+                # insert new normalized vector at top
+                new_norm = normalize_matrix(np.expand_dims(emb_vec.astype(np.float32), axis=0))
+                existing_normed = np.vstack([new_norm, existing_normed])[:MAX_EXISTING]
+            added_any = True
+
+        # update last seen to newest entry's link
+        set_feed_lastseen(channel, feed_url, entries[0].get("link", ""))
+
+    # enforce MAX_ITEMS cap (keep newest at top)
+    all_items = channel.findall("item")
+    if len(all_items) > MAX_ITEMS:
+        for it in all_items[MAX_ITEMS:]:
+            channel.remove(it)
+
+    tree.write(RESULT_FILE, encoding="utf-8", xml_declaration=True)
+
+# -------------------- run once (this is final optimized single-run) --------------------
 if __name__ == "__main__":
-    while True:
-        fetch_once()
-        time.sleep(SLEEP_SECONDS)
+    process_once()

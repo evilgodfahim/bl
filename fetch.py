@@ -3,8 +3,13 @@ import os
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from fuzzywuzzy import fuzz
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
+# -----------------------------
+# CONFIG
+# -----------------------------
 FEEDS = [
     "http://www.thedailystar.net/latest/rss/rss.xml",
     "https://tbsnews.net/top-news/rss.xml",
@@ -12,11 +17,12 @@ FEEDS = [
 ]
 
 OUTFILE = "result.xml"
-MAX_ITEMS = 500
+MAX_ITEMS = 1000
 BLOCK = ["/sport/", "/sports/", "/entertainment/"]
+SIM_THRESHOLD = 0.88  # semantic similarity threshold
 
 # -----------------------------
-# Load or initialize XML
+# LOAD OR INITIALIZE XML
 # -----------------------------
 def load_existing():
     if not os.path.exists(OUTFILE):
@@ -27,34 +33,36 @@ def load_existing():
     return tree, tree.getroot().find("channel")
 
 # -----------------------------
-# Check if titles are similar
+# SEMANTIC MODEL
 # -----------------------------
-def title_similar(a, b, threshold=85):
-    """
-    Uses fuzzy string matching (Levenshtein distance) to detect near-identical titles.
-    Returns True if similarity score exceeds threshold.
-    """
-    return fuzz.ratio(a.lower().strip(), b.lower().strip()) >= threshold
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+def embed_title(title):
+    return model.encode(title, convert_to_numpy=True)
+
+def title_similar_semantic(a_embed, b_embed, threshold=SIM_THRESHOLD):
+    sim = cosine_similarity([a_embed], [b_embed])[0][0]
+    return sim >= threshold
 
 # -----------------------------
-# Check if item exists
+# CHECK EXISTING
 # -----------------------------
-def exists(channel, title):
-    for item in channel.findall("item"):
-        t = item.findtext("title", "")
-        if title_similar(title, t):
+def exists_semantic(existing_embeds, title):
+    t_embed = embed_title(title)
+    for e_embed in existing_embeds:
+        if title_similar_semantic(t_embed, e_embed):
             return True
     return False
 
 # -----------------------------
-# Block unwanted links
+# BLOCK LINKS
 # -----------------------------
 def blocked(link):
     link = link.lower()
     return any(x in link for x in BLOCK)
 
 # -----------------------------
-# Add new item at top
+# ADD ITEM AT TOP
 # -----------------------------
 def add_item(channel, entry):
     item = ET.Element("item")
@@ -77,10 +85,14 @@ def add_item(channel, entry):
             channel.remove(old)
 
 # -----------------------------
-# Fetch feeds once
+# FETCH ONCE
 # -----------------------------
 def fetch_once():
     tree, channel = load_existing()
+    # Precompute embeddings of existing titles
+    existing_titles = [item.findtext("title","") for item in channel.findall("item")]
+    existing_embeds = [embed_title(t) for t in existing_titles]
+
     for url in FEEDS:
         feed = feedparser.parse(url)
         for e in feed.entries:
@@ -90,13 +102,13 @@ def fetch_once():
                 continue
             if blocked(link):
                 continue
-            if exists(channel, title):
+            if exists_semantic(existing_embeds, title):
                 continue
             add_item(channel, e)
     tree.write(OUTFILE, encoding="utf-8", xml_declaration=True)
 
 # -----------------------------
-# Main loop (every 5 mins)
+# MAIN LOOP (EVERY 5 MINUTES)
 # -----------------------------
 if __name__ == "__main__":
     while True:

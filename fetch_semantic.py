@@ -35,7 +35,7 @@ CACHE_JSON = "cache.json"
 MAX_TOTAL = 1000
 MAX_PER_FEED = 50
 MAX_EXIST = 50
-SIM_THRESH = 0.65
+SIM_THRESH = 0.70
 BLOCK_PARTS = ("/opinion/", "/editorial/", "/sports/", "/sport/", "/entertainment/", 
                 "/showtime/", "/video/", "/business/", "/cricket/", "/football/")
 IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
@@ -277,11 +277,17 @@ def fetch_feed(url, attempt=1):
         # Set user agent to avoid blocking
         feedparser.USER_AGENT = "Mozilla/5.0 (compatible; NewsAggregator/1.0)"
         
-        feed = feedparser.parse(url, timeout=REQUEST_TIMEOUT)
+        # Parse without timeout parameter (not supported in older feedparser versions)
+        feed = feedparser.parse(url)
         
         # Check for errors
         if hasattr(feed, 'bozo') and feed.bozo:
-            logger.warning(f"Feed parse warning for {url}: {feed.bozo_exception}")
+            logger.warning(f"Feed parse warning for {url}: {feed.get('bozo_exception', 'Unknown error')}")
+        
+        # Check if feed object is valid
+        if not feed:
+            logger.error(f"Failed to parse feed: {url}")
+            return []
         
         # Validate feed has entries
         if not hasattr(feed, 'entries') or not feed.entries:

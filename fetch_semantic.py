@@ -28,8 +28,8 @@ CACHE_JSON = "cache.json"
 MAX_TOTAL = 1000
 MAX_PER_FEED = 50
 MAX_EXIST = 50
-SIM_THRESH = 0.65
-BLOCK_PARTS = ("/opinion/", "/editorial/", "/sports/", "/sport/", "/entertainment/", "/showtime/", "/video/", "/business/")
+SIM_THRESH = 0.70
+BLOCK_PARTS = ("/opinion/", "/editorial/", "/sports/", "/sport/", "/entertainment/", "/showtime/", "/video/", "/business/", "/cricket/", "/football/")
 IMG_RE = re.compile(r'<img[^>]+src="([^"]+)"')
 DAYS_TO_KEEP = 7
 

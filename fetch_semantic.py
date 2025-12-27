@@ -11,7 +11,11 @@ import numpy as np
 
 # feeds
 FEEDS = [
-    "https://evilgodfahim.github.io/bangladesh/feed.xml"
+    "https://evilgodfahim.github.io/ds/todays_news.xml",
+    "https://evilgodfahim.github.io/ep/articles.xml",
+    "https://en.prothomalo.com/feed/",
+    "https://www.dhakatribune.com/feed/",
+    "http://www.thedailystar.net/latest/rss/rss.xml"
 ]
 
 RESULT_XML = "result.xml"
@@ -21,7 +25,7 @@ MAX_TOTAL = 1000
 MAX_PER_FEED = 50
 MAX_EXIST = 50
 SIM_THRESH = 0.75
-BLOCK_PARTS = ("/sport/", "/sports/", "/entertainment/", "/videos/", "/video/", "/showtime/")
+BLOCK_PARTS = ("/opinion/", "/editorial/", "/sports/", "/sport/", "/entertainment/", "/showtime/", "/video/")
 IMG_RE = re.compile(r'<img[^>]+src="([^"]+)"')
 DAYS_TO_KEEP = 7
 

@@ -112,7 +112,7 @@ def ensure_xml():
     """Create XML file if it doesn't exist"""
     if not os.path.exists(RESULT_XML):
         try:
-            root = ET.Element("rss", {"version": "2.0"})
+            root = ET.Element("rss", {"version": "2.0", "xmlns:media": "http://search.yahoo.com/mrss/"})
             ch = ET.SubElement(root, "channel")
             ET.SubElement(ch, "title").text = "Aggregated Feed"
             ET.SubElement(ch, "link").text = ""
@@ -180,28 +180,54 @@ def clean_text(text):
 
 def extract_image(entry):
     """Extract image from various possible fields in feed entry"""
+    image_url = ""
+    
     # Try media:content
     if hasattr(entry, 'media_content') and entry.media_content:
         try:
-            return entry.media_content[0].get('url', '')
-        except (IndexError, AttributeError, KeyError):
-            pass
+            for media in entry.media_content:
+                url = media.get('url', '')
+                if url:
+                    image_url = url
+                    logger.debug(f"Found image in media_content: {url}")
+                    return image_url
+        except (IndexError, AttributeError, KeyError) as e:
+            logger.debug(f"Error reading media_content: {e}")
     
     # Try media:thumbnail
     if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
         try:
-            return entry.media_thumbnail[0].get('url', '')
-        except (IndexError, AttributeError, KeyError):
-            pass
+            for thumb in entry.media_thumbnail:
+                url = thumb.get('url', '')
+                if url:
+                    image_url = url
+                    logger.debug(f"Found image in media_thumbnail: {url}")
+                    return image_url
+        except (IndexError, AttributeError, KeyError) as e:
+            logger.debug(f"Error reading media_thumbnail: {e}")
+    
+    # Try links with type image
+    if hasattr(entry, 'links') and entry.links:
+        for link in entry.links:
+            if link.get('type', '').startswith('image/') or link.get('rel') == 'enclosure':
+                url = link.get('href', '')
+                if url:
+                    image_url = url
+                    logger.debug(f"Found image in links: {url}")
+                    return image_url
     
     # Try enclosures
     if hasattr(entry, 'enclosures') and entry.enclosures:
         for enc in entry.enclosures:
-            if enc.get('type', '').startswith('image/'):
-                return enc.get('href', '')
+            if enc.get('type', '').startswith('image/') or enc.get('href', '').lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+                url = enc.get('href', '')
+                if url:
+                    image_url = url
+                    logger.debug(f"Found image in enclosures: {url}")
+                    return image_url
     
     # Try content or summary for img tags
-    content_fields = ['content', 'summary', 'description']
+    content_fields = ['content', 'summary', 'description', 'summary_detail']
     for field in content_fields:
         if hasattr(entry, field):
             content = getattr(entry, field)
@@ -211,11 +237,33 @@ def extract_image(entry):
                 content = content.get('value', '')
             
             if content:
+                # Try to find img tag
                 match = IMG_RE.search(str(content))
                 if match:
-                    return match.group(1)
+                    image_url = match.group(1)
+                    logger.debug(f"Found image in {field} HTML: {image_url}")
+                    return image_url
     
-    return ""
+    # Try looking for any attribute with 'image' in the name
+    for attr in dir(entry):
+        if 'image' in attr.lower() and not attr.startswith('_'):
+            try:
+                val = getattr(entry, attr)
+                if isinstance(val, str) and val.startswith('http'):
+                    image_url = val
+                    logger.debug(f"Found image in attribute {attr}: {val}")
+                    return image_url
+                elif isinstance(val, dict) and 'href' in val:
+                    image_url = val['href']
+                    logger.debug(f"Found image in attribute {attr}['href']: {image_url}")
+                    return image_url
+            except:
+                pass
+    
+    if not image_url:
+        logger.debug("No image found for this entry")
+    
+    return image_url
 
 
 def extract_description(entry):
@@ -367,8 +415,17 @@ def add_article(channel, entry, cache, existing_titles, existing_embeds):
         ET.SubElement(item, "link").text = link
         ET.SubElement(item, "description").text = desc or "No description available"
         ET.SubElement(item, "pubDate").text = pub_date
+        
+        # Add image if found
         if image:
-            ET.SubElement(item, "image").text = image
+            # Try multiple image elements for compatibility
+            ET.SubElement(item, "enclosure", {"url": image, "type": "image/jpeg"})
+            # Also add as media:thumbnail (some readers prefer this)
+            img_elem = ET.SubElement(item, "{http://search.yahoo.com/mrss/}thumbnail")
+            img_elem.set("url", image)
+            logger.debug(f"Added image to article: {image}")
+        else:
+            logger.debug(f"No image found for article: {title[:50]}...")
         
         # Update cache
         cache["title_log"][title] = pub_date

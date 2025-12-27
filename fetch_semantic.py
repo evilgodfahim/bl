@@ -26,7 +26,7 @@ MAX_TOTAL = 1000
 MAX_PER_FEED = 50
 MAX_EXIST = 50
 SIM_THRESH = 0.50
-BLOCK_PARTS = ("/opinion/", "/editorial/", "/sports/", "/sport/", "/entertainment/", "/showtime/", "/video/")
+BLOCK_PARTS = ("/opinion/", "/editorial/", "/sports/", "/sport/", "/entertainment/", "/showtime/", "/video/", "/business/")
 IMG_RE = re.compile(r'<img[^>]+src="([^"]+)"')
 DAYS_TO_KEEP = 7
 

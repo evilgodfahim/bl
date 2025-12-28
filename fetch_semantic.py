@@ -34,7 +34,7 @@ MAX_PER_FEED = 50
 MAX_EXIST = 50
 SIM_THRESH = 0.60
 BLOCK_PARTS = ("/opinion/", "/editorial/", "/sports/", "/sport/", "/entertainment/", 
-                "/showtime/", "/video/", "/business/", "/cricket/", "/football/", "/event/", "/mis/", "/banking/", "/others/", "/other/", "/stocks/" ,"/stock/")
+                "/showtime/", "/video/", "/business/", "/cricket/", "/football/", "/event/", "/mis/", "/banking/", "/others/", "/other/", "/stocks/" ,"/stock/", "/hockey/", "/tennis/")
 IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
 DAYS_TO_KEEP = 7
 REQUEST_TIMEOUT = 30

@@ -25,7 +25,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install feedparser sentence-transformers scikit-learn numpy
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run RSS fetch script
         run: python fetch_semantic.py

@@ -1,2 +1,5 @@
 feedparser
+sentence-transformers
 requests
+numpy
+scikit-learn
